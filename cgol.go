@@ -73,6 +73,21 @@ func (world World) Inflate() World {
 		}
 		close(coordsChan)
 	}()
+	
+	// Setup the worker goroutines that consume the coords channel
+	// and generate the neighbouring coordinates
+	for i := 0; i < cntWorkers; i++ {
+		go func() {
+			for coord := range coordsChan {
+				for i := -1; i < 2; i++ {
+					for j := -1; j < 2; j++ {
+						neighboursChan <- Coord{coord.x + i, coord.y + j}
+					}
+				}
+			}
+			doneChan <- struct{}{}
+		}()
+	}
 
     // Wait for the completion of all worker goroutines, and
     // then close the neighbours channel
