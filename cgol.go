@@ -15,11 +15,12 @@
 package main
 
 import (
-	"github.com/spf13/cobra"
+	"flag"
 	"fmt"
 	"strings"
 	"strconv"
 	"os"
+	"math/rand"
 )
 
 // We are storing the cells (alive or dead) in a map. The keys are the Cartesian
@@ -76,9 +77,12 @@ func (world World) Deflate() World {
 	return newWorld
 }
 
-// Tick computes the next generation of live cells in the world
-func (world World) Tick() World {
-	// count live neighbours for each cell
+// CountLiveNeighbours counts for each cell in the world its neighbouring
+// alive cells and updates its counter
+func (world World) CountLiveNeighbours() World {
+	var newWorld World
+	newWorld = make(World)
+	
 	for coord, cell := range world {
 		n := 0
 		for i := -1; i < 2; i++ {
@@ -89,12 +93,18 @@ func (world World) Tick() World {
 				}
 			}
 		}
-		world[coord] = Cell{cell.alive, n}
+		newWorld[coord] = Cell{cell.alive, n}
 	}
+	
+	return newWorld
+}
 
+// ApplyRules applies the rules to each cell of the world. This determines
+// the fate of the cell for the next tick.
+func (world World) ApplyRules() World {
 	var newWorld World
 	newWorld = make(World)
-	
+
 	// apply the rules of the game to each cell
 	for coord, cell := range world {
 		if cell.alive {
@@ -109,6 +119,11 @@ func (world World) Tick() World {
 	}
 
 	return newWorld
+}
+
+// Tick computes the next generation of live cells in the world
+func (world World) Tick() World {
+	return world.Inflate().CountLiveNeighbours().ApplyRules().Deflate()
 }
 
 // gnuplotHeader prints the header for gnuplot
@@ -130,73 +145,16 @@ func gnuplotWorld(world World) {
 }
 
 func main() {
-	ticks := 10  // how many ticks the game is running
-	pattern := "1,0;0,1;1,1;1,2;2,2"  // initial pattern of life cells
-	d := 100 // width and height of gnuplot window: -d/2 <= x <= d/2 and -d/2 <= y <= d/2
-
-
-	// Cobra configuration
-	var rootCmd = &cobra.Command{
-		Use: "gol",
-		Short: "Run Conway's Game of Life",
-		Long: `The Game of Life, also known simply as Life, is a 
-cellular automaton devised by the British mathematician John Horton Conway in 
-1970.
-
-The "game" is a zero-player game, meaning that its evolution is determined by 
-its initial state, requiring no further input. One interacts with the Game of 
-Life by creating an initial configuration and observing how it evolves or, for 
-advanced players, by creating patterns with particular properties.`,
-		Run: func(cmd *cobra.Command, args []string) {
-			gol(d, pattern, ticks)
-		},
-	}
-
-	rootCmd.Flags().IntVarP(&ticks, "ticks", "t", 10, "ticks to run the game")
-	rootCmd.Flags().StringVarP(&pattern, "pattern", "p", "1,0;0,1;1,1;1,2;2,2", "initial pattern of live cells")
-	rootCmd.Flags().IntVarP(&d, "dimension", "d", 50, "width and height of gnuplot window")
-
-	rootCmd.Execute()
-}
-
-func gol(d int, pattern string, ticks int) {
+	ticks, size, pattern := handleCommandLine()
 	// The world
 	var world World
 	world = make(World)
 
-	/*
-	// Define a starting world: the r-Pentomino
-	world[Coord{1, 0}] = Cell{true, 0}
-	world[Coord{0, 1}] = Cell{true, 0}
-	world[Coord{1, 1}] = Cell{true, 0}
-	world[Coord{1, 2}] = Cell{true, 0}
-	world[Coord{2, 2}] = Cell{true, 0}
-	 */
-
-	// The starting configuratio in the string cells
-	coordinates := strings.Split(pattern, ";")
-
-	for _, xy := range coordinates {
-		c := strings.Split(xy, ",")
-		if len(c) < 2 {
-			fmt.Println("pattern error:", pattern, ":", xy)
-			os.Exit(1)
-		}
-		x, err := strconv.Atoi(c[0])
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-		y, err := strconv.Atoi(c[1])
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-
-		world[Coord{x, y}] = Cell{true, 0}
+	for _, coord := range pattern {
+		world[coord] = Cell{true, 0}
 	}
-
-	gnuplotHeader(d)
+	
+	gnuplotHeader(size)
 
 	gnuplotWorld(world)
 	
@@ -204,4 +162,53 @@ func gol(d int, pattern string, ticks int) {
 		world = world.Inflate().Tick().Deflate()
 		gnuplotWorld(world)
 	}
+}
+
+func handleCommandLine() (ticks, size int, pattern []Coord) {
+	// Define our own usage message, overwriting the default one
+	flag.Usage = func() {
+		fmt.Fprint(os.Stderr, "Usage: cgol [flags] [pattern] | gnuplot --persist\n")
+		flag.PrintDefaults()
+	}
+
+	// Define the command line flags
+	flag.IntVar(&ticks, "ticks", 10, "number of iterations running the game")
+	flag.IntVar(&size, "size", 50, "size of the visible world in x and y direction")
+	var random *bool = flag.Bool("random", false, "generate a random pattern to start with")
+	var coordinatesOpt *string = flag.String("coordinates", "1,0;0,1;1,1;1,2;2,2", "semi-colon-separated list of coordinates")
+	flag.Parse()
+	
+	// Create a ranodm starting pattern or use the r-pentomino pattern
+	if *random {
+		// Generate a random pattern
+		//pattern = make([]Coord, size*size/5, size*size)
+		pattern = []Coord{}
+		rand.Seed(42)
+		for i := 0; i < size; i++ {
+			for j := 0; j < size; j++ {
+				if rand.Intn(100) < 20 {
+					pattern = append(pattern, Coord{i, j})
+				}
+			}
+		}
+	} else {
+		coordinates := strings.Split(*coordinatesOpt, ";")
+		pattern = make([]Coord, len(coordinates))
+		for idx := range coordinates {
+			xy := strings.Split(coordinates[idx], ",")
+			x, err := strconv.Atoi(xy[0])
+			if err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
+			y, err := strconv.Atoi(xy[1])
+			if err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
+			pattern[idx] = Coord{x, y}
+		}
+	}
+	
+	return ticks, size, pattern
 }
