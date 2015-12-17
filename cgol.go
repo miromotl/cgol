@@ -21,7 +21,13 @@ import (
 	"strconv"
 	"os"
 	"math/rand"
+	"runtime"
+	"time"
 )
+
+// We use as many go routines as workes as there are cores/processors
+// in the computer.
+var cntWorkers = runtime.NumCPU()
 
 // We are storing the cells (alive or dead) in a map. The keys are the Cartesian
 // coordinates of the cells and the values are the properties of the cells,
@@ -45,18 +51,42 @@ type World map[Coord]Cell
 // Inflate inflates the world with dead cells surrounding
 // the live cells
 func (world World) Inflate() World {
+	// Setup the communication channels for the goroutines
+	coordsChan := make(chan Coord, cntWorkers)
+	neighboursChan := make(chan Coord, len(world))
+	doneChan := make(chan struct{}, cntWorkers)
+	
 	var newWorld World
 	newWorld = make(World)
-	
+
+	// Copy the live cells first into the new world
 	for coord, cell := range world {
 		newWorld[coord] = cell
-		for i := -1; i < 2; i++ {
-			for j := -1; j < 2; j++ {
-				c := Coord{coord.x + i, coord.y + j}
-				if _, found := newWorld[c]; !found {
-					newWorld[c] = Cell{false, 0}
-				}
-			}
+	}
+	
+	// Send the cells of the world to the coords channel, so
+	// the neighbouring coordinates will be produced by the
+	// worker goroutines
+	go func() {
+		for coord := range world {
+			coordsChan <- coord
+		}
+		close(coordsChan)
+	}()
+
+    // Wait for the completion of all worker goroutines, and
+    // then close the neighbours channel
+    go func() {
+        for i := 0; i < cntWorkers; i++ {
+            <-doneChan
+        }
+        close(neighboursChan)
+    }()
+
+	// Receive the neighbours in the neighbours channel
+	for neighbour := range neighboursChan {
+		if _, found := newWorld[neighbour]; !found {
+			newWorld[neighbour] = Cell{false, 0}
 		}
 	}
 
@@ -145,7 +175,11 @@ func gnuplotWorld(world World) {
 }
 
 func main() {
+	// Handle the command line arguments
 	ticks, size, pattern := handleCommandLine()
+	
+	start := time.Now()
+	
 	// The world
 	var world World
 	world = make(World)
@@ -159,9 +193,12 @@ func main() {
 	gnuplotWorld(world)
 	
 	for i := 0; i < ticks; i++ {
-		world = world.Inflate().Tick().Deflate()
+		world = world.Tick()
 		gnuplotWorld(world)
 	}
+	
+	elapsed := time.Since(start)
+	fmt.Printf("Elapsed: %s", elapsed)
 }
 
 func handleCommandLine() (ticks, size int, pattern []Coord) {
