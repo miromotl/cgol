@@ -50,12 +50,7 @@ type World map[Coord]Cell
 
 // Inflate inflates the world with dead cells surrounding
 // the live cells
-func (world World) Inflate() World {
-	// Setup the communication channels for the goroutines
-	coordsChan := make(chan Coord, cntWorkers)
-	neighboursChan := make(chan Coord, len(world))
-	doneChan := make(chan struct{}, cntWorkers)
-	
+func (world World) Inflate(inflateChan, neighboursChan chan Coord) World {
 	var newWorld World
 	newWorld = make(World)
 
@@ -64,42 +59,20 @@ func (world World) Inflate() World {
 		newWorld[coord] = cell
 	}
 	
-	// Send the cells of the world to the coords channel, so
+	// Send the cells of the world to the inflate channel, so
 	// the neighbouring coordinates will be produced by the
 	// worker goroutines
 	go func() {
 		for coord := range world {
-			coordsChan <- coord
+			inflateChan <- coord
 		}
-		close(coordsChan)
 	}()
 	
-	// Setup the worker goroutines that consume the coords channel
-	// and generate the neighbouring coordinates
-	for i := 0; i < cntWorkers; i++ {
-		go func() {
-			for coord := range coordsChan {
-				for i := -1; i < 2; i++ {
-					for j := -1; j < 2; j++ {
-						neighboursChan <- Coord{coord.x + i, coord.y + j}
-					}
-				}
-			}
-			doneChan <- struct{}{}
-		}()
-	}
-
-    // Wait for the completion of all worker goroutines, and
-    // then close the neighbours channel
-    go func() {
-        for i := 0; i < cntWorkers; i++ {
-            <-doneChan
-        }
-        close(neighboursChan)
-    }()
-
 	// Receive the neighbours in the neighbours channel
-	for neighbour := range neighboursChan {
+	// We are expecting 8 neighbours for each cell,
+	// i.e. 9 coordinates for each cell in the map
+	for cnt := 0; cnt < 9 * len(world); cnt++ {
+		neighbour := <- neighboursChan
 		if _, found := newWorld[neighbour]; !found {
 			newWorld[neighbour] = Cell{false, 0}
 		}
@@ -167,8 +140,8 @@ func (world World) ApplyRules() World {
 }
 
 // Tick computes the next generation of live cells in the world
-func (world World) Tick() World {
-	return world.Inflate().CountLiveNeighbours().ApplyRules().Deflate()
+func (world World) Tick(inflateChan, neighboursChan chan Coord) World {
+	return world.Inflate(inflateChan, neighboursChan).CountLiveNeighbours().ApplyRules().Deflate()
 }
 
 // gnuplotHeader prints the header for gnuplot
@@ -195,6 +168,25 @@ func main() {
 	
 	start := time.Now()
 	
+	// Setup the communication channels for the goroutines
+	inflateChan := make(chan Coord, cntWorkers)
+	neighboursChan := make(chan Coord)
+
+	// Setup the worker goroutines that consume the inflate channel
+	// and generate the neighbouring coordinates writing them to the
+	// neighbours channel
+	for i := 0; i < cntWorkers; i++ {
+		go func() {
+			for coord := range inflateChan {
+				for i := -1; i < 2; i++ {
+					for j := -1; j < 2; j++ {
+						neighboursChan <- Coord{coord.x + i, coord.y + j}
+					}
+				}
+			}
+		}()
+	}
+
 	// The world
 	var world World
 	world = make(World)
@@ -208,7 +200,7 @@ func main() {
 	gnuplotWorld(world)
 	
 	for i := 0; i < ticks; i++ {
-		world = world.Tick()
+		world = world.Tick(inflateChan, neighboursChan)
 		gnuplotWorld(world)
 	}
 	
