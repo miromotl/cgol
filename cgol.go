@@ -50,7 +50,12 @@ type World map[Coord]Cell
 
 // Inflate inflates the world with dead cells surrounding
 // the live cells
-func (world World) Inflate(inflateChan, neighboursChan chan Coord) World {
+func (world World) Inflate() World {
+	// Setup the communication channels for the goroutines
+	coordsChan := make(chan Coord, cntWorkers)
+	neighboursChan := make(chan Coord, len(world)*9)
+	doneChan := make(chan struct{}, cntWorkers)
+	
 	var newWorld World
 	newWorld = make(World)
 
@@ -59,20 +64,42 @@ func (world World) Inflate(inflateChan, neighboursChan chan Coord) World {
 		newWorld[coord] = cell
 	}
 	
-	// Send the cells of the world to the inflate channel, so
+	// Send the cells of the world to the coords channel, so
 	// the neighbouring coordinates will be produced by the
 	// worker goroutines
 	go func() {
 		for coord := range world {
-			inflateChan <- coord
+			coordsChan <- coord
 		}
+		close(coordsChan)
 	}()
 	
+	// Setup the worker goroutines that consume the coords channel
+	// and generate the neighbouring coordinates
+	for i := 0; i < cntWorkers; i++ {
+		go func() {
+			for coord := range coordsChan {
+				for i := -1; i < 2; i++ {
+					for j := -1; j < 2; j++ {
+						neighboursChan <- Coord{coord.x + i, coord.y + j}
+					}
+				}
+			}
+			doneChan <- struct{}{}
+		}()
+	}
+
+    // Wait for the completion of all worker goroutines, and
+    // then close the neighbours channel
+    go func() {
+        for i := 0; i < cntWorkers; i++ {
+            <-doneChan
+        }
+        close(neighboursChan)
+    }()
+
 	// Receive the neighbours in the neighbours channel
-	// We are expecting 8 neighbours for each cell,
-	// i.e. 9 coordinates for each cell in the map
-	for cnt := 0; cnt < 9 * len(world); cnt++ {
-		neighbour := <- neighboursChan
+	for neighbour := range neighboursChan {
 		if _, found := newWorld[neighbour]; !found {
 			newWorld[neighbour] = Cell{false, 0}
 		}
@@ -140,8 +167,8 @@ func (world World) ApplyRules() World {
 }
 
 // Tick computes the next generation of live cells in the world
-func (world World) Tick(inflateChan, neighboursChan chan Coord) World {
-	return world.Inflate(inflateChan, neighboursChan).CountLiveNeighbours().ApplyRules().Deflate()
+func (world World) Tick() World {
+	return world.Inflate().CountLiveNeighbours().ApplyRules().Deflate()
 }
 
 // gnuplotHeader prints the header for gnuplot
@@ -166,27 +193,8 @@ func main() {
 	// Handle the command line arguments
 	ticks, size, pattern := handleCommandLine()
 	
-	start := time.Now()
+//	start := time.Now()
 	
-	// Setup the communication channels for the goroutines
-	inflateChan := make(chan Coord, cntWorkers)
-	neighboursChan := make(chan Coord)
-
-	// Setup the worker goroutines that consume the inflate channel
-	// and generate the neighbouring coordinates writing them to the
-	// neighbours channel
-	for i := 0; i < cntWorkers; i++ {
-		go func() {
-			for coord := range inflateChan {
-				for i := -1; i < 2; i++ {
-					for j := -1; j < 2; j++ {
-						neighboursChan <- Coord{coord.x + i, coord.y + j}
-					}
-				}
-			}
-		}()
-	}
-
 	// The world
 	var world World
 	world = make(World)
@@ -200,12 +208,12 @@ func main() {
 	gnuplotWorld(world)
 	
 	for i := 0; i < ticks; i++ {
-		world = world.Tick(inflateChan, neighboursChan)
+		world = world.Tick()
 		gnuplotWorld(world)
 	}
 	
-	elapsed := time.Since(start)
-	fmt.Printf("Elapsed: %s", elapsed)
+	//elapsed := time.Since(start)
+	//fmt.Printf("Elapsed: %s", elapsed)
 }
 
 func handleCommandLine() (ticks, size int, pattern []Coord) {
@@ -225,13 +233,12 @@ func handleCommandLine() (ticks, size int, pattern []Coord) {
 	// Create a ranodm starting pattern or use the r-pentomino pattern
 	if *random {
 		// Generate a random pattern
-		//pattern = make([]Coord, size*size/5, size*size)
 		pattern = []Coord{}
-		rand.Seed(42)
+		rand.Seed(time.Now().UTC().UnixNano())
 		for i := 0; i < size; i++ {
 			for j := 0; j < size; j++ {
 				if rand.Intn(100) < 20 {
-					pattern = append(pattern, Coord{i, j})
+					pattern = append(pattern, Coord{i -size/2, j - size/2})
 				}
 			}
 		}
